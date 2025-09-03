@@ -1,93 +1,49 @@
-name: Free Ubuntu VPS with SSH + Nexus (Auto)
+name: Free Ubuntu VPS with SSH
 
 on:
   workflow_dispatch:
-    inputs:
-      enable_ssh:
-        description: "Mở SSH (tmate) để vào máy?"
-        required: true
-        default: "false"
-      allow_overlap:
-        description: "Cho phép chạy song song khi test thủ công? (true = KHÔNG tự hủy lượt trước)"
-        required: true
-        default: "false"
-  schedule:
-    - cron: "0 */5 * * *"   # restart mỗi 5 giờ
 
-# Lượt mới có hủy lượt cũ hay không:
-# - schedule hoặc dispatch với allow_overlap=false  -> hủy lượt cũ (tránh chồng).
-# - dispatch với allow_overlap=true               -> KHÔNG hủy (dễ test).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ ! (github.event_name == 'workflow_dispatch' && github.event.inputs.allow_overlap == 'true') }}
+  group: vps-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 295
-
-    env:
-      NEXUS_NODE_IDS: "35789137 35928265 35929573"
+    timeout-minutes: 360
 
     steps:
-      - name: Prep & tools
+      - name: Update & Install base packages
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            tmux curl ca-certificates git protobuf-compiler
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.nexus/bin"  >> "$GITHUB_PATH"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            tmux curl ca-certificates git protobuf-compiler git
 
-      - name: Install Nexus CLI (non-interactive)
+      - name: Install Rust
         run: |
           set -euxo pipefail
-          curl -fsSL https://cli.nexus.xyz/ -o /tmp/nexus_install.sh
-          chmod +x /tmp/nexus_install.sh
-          yes | /bin/bash /tmp/nexus_install.sh
-          echo "$HOME/.nexus/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.nexus/bin:$PATH"
-          command -v nexus-network
-          nexus-network --version || true
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Start 3 Nexus nodes in tmux
+      - name: Build Nexus CLI
         run: |
           set -euxo pipefail
-          for s in node1 node2 node3 dash; do tmux kill-session -t "$s" || true; done
+          git clone https://github.com/nexus-xyz/nexus-cli.git
+          cd nexus-cli/clients/cli
+          cargo build --release
+          echo "::notice::Nexus CLI build done!"
 
-          NX_BIN="$(command -v nexus-network)"; test -x "$NX_BIN"
-
-          i=1
-          for ID in $NEXUS_NODE_IDS; do
-            SESSION="node${i}"
-            LOG="/tmp/${SESSION}.log"
-            : > "${LOG}"
-            tmux new-session -d -s "$SESSION" "bash -lc '$NX_BIN start --node-id ${ID} >> ${LOG} 2>&1'"
-            echo "Started $SESSION with node-id=$ID (log: $LOG)"
-            i=$((i+1))
-          done
-
-          tmux new-session -d -s dash "bash -lc 'tail -f /tmp/node1.log'"
-          tmux split-window -h  "bash -lc 'tail -f /tmp/node2.log'"
-          tmux split-window -v  "bash -lc 'tail -f /tmp/node3.log'"
-          tmux select-layout tiled
-          tmux set -t dash mouse on || true
-          tmux ls || true
-
-      - name: Auto-attach dashboard on login
+      - name: Prepare tmux with 3 Nexus windows
         run: |
-          set -eux
-          echo 'if [ -z "$TMUX" ] && tmux has-session -t dash 2>/dev/null; then tmux attach -t dash; fi' >> ~/.bashrc
-          echo 'echo "Detach tmux: Ctrl+b rồi nhấn d"' >> ~/.bashrc
+          set -euxo pipefail
+          # tạo tmux session "nexus" với 3 cửa sổ chạy nexus
+          tmux new-session -d -s nexus -n win1 "./nexus-cli/clients/cli/target/release/nexus"
+          tmux new-window -t nexus:1 -n win2 "./nexus-cli/clients/cli/target/release/nexus"
+          tmux new-window -t nexus:2 -n win3 "./nexus-cli/clients/cli/target/release/nexus"
+          tmux ls
 
-      - name: (Optional) Open SSH (tmate)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_ssh == 'true' }}
+      - name: Start SSH (tmate)
         uses: mxschmitt/action-tmate@v3
         with:
           limit-access-to-actor: false
-
-      - name: Keep job alive while nodes run
-        run: |
-          set -euxo pipefail
-          touch /tmp/node1.log /tmp/node2.log /tmp/node3.log
-          tail -f /tmp/node1.log /tmp/node2.log /tmp/node3.log
