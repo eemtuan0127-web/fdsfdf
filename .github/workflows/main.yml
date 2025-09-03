@@ -14,9 +14,9 @@ on:
   schedule:
     - cron: "0 */5 * * *"   # restart mỗi 5 giờ
 
-# Concurrency:
-# - Mặc định (schedule, hoặc dispatch với allow_overlap=false): lượt mới sẽ hủy lượt cũ của cùng nhánh.
-# - Khi dispatch với allow_overlap=true: KHÔNG hủy (dễ test, tránh 'operation was canceled').
+# Lượt mới có hủy lượt cũ hay không:
+# - schedule hoặc dispatch với allow_overlap=false  -> hủy lượt cũ (tránh chồng).
+# - dispatch với allow_overlap=true               -> KHÔNG hủy (dễ test).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ ! (github.event_name == 'workflow_dispatch' && github.event.inputs.allow_overlap == 'true') }}
@@ -27,17 +27,9 @@ jobs:
     timeout-minutes: 295
 
     env:
-      # Đổi node-id tại đây
       NEXUS_NODE_IDS: "35789137 35928265 35929573"
 
     steps:
-      - name: Print context (debug)
-        run: |
-          echo "event_name=${{ github.event_name }}"
-          echo "ref=${{ github.ref }}"
-          echo "allow_overlap=${{ github.event.inputs.allow_overlap || 'false' }}"
-          echo "cancel_in_progress=$(( ! ( '${{ github.event_name }}' = 'workflow_dispatch' && '${{ github.event.inputs.allow_overlap }}' = 'true' ) ))"
-
       - name: Prep & tools
         run: |
           set -euxo pipefail
@@ -62,6 +54,7 @@ jobs:
         run: |
           set -euxo pipefail
           for s in node1 node2 node3 dash; do tmux kill-session -t "$s" || true; done
+
           NX_BIN="$(command -v nexus-network)"; test -x "$NX_BIN"
 
           i=1
@@ -74,7 +67,6 @@ jobs:
             i=$((i+1))
           done
 
-          # Dashboard 3 ô log
           tmux new-session -d -s dash "bash -lc 'tail -f /tmp/node1.log'"
           tmux split-window -h  "bash -lc 'tail -f /tmp/node2.log'"
           tmux split-window -v  "bash -lc 'tail -f /tmp/node3.log'"
