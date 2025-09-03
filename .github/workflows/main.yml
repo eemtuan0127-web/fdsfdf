@@ -1,4 +1,4 @@
-name: Free Ubuntu VPS with SSH
+name: Free Ubuntu VPS with SSH (tmux + 3 nexus panes)
 
 on:
   workflow_dispatch:
@@ -12,13 +12,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
+    env:
+      NEXUS_DIR: ${{ github.workspace }}/nexus-cli/clients/cli
+      NEXUS_BIN: ${{ github.workspace }}/nexus-cli/clients/cli/target/release/nexus
+
     steps:
-      - name: Update & Install base packages
+      - name: Base packages
         run: |
           set -euxo pipefail
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            tmux curl ca-certificates git protobuf-compiler git
+            tmux curl ca-certificates git protobuf-compiler
 
       - name: Install Rust
         run: |
@@ -30,18 +34,28 @@ jobs:
         run: |
           set -euxo pipefail
           git clone https://github.com/nexus-xyz/nexus-cli.git
-          cd nexus-cli/clients/cli
+          cd "$NEXUS_DIR"
           cargo build --release
-          echo "::notice::Nexus CLI build done!"
+          test -x "$NEXUS_BIN"
+          echo "::notice::Nexus CLI build done: $NEXUS_BIN"
 
-      - name: Prepare tmux with 3 Nexus windows
+      - name: Prepare tmux with 3 windows running nexus
         run: |
           set -euxo pipefail
-          # tạo tmux session "nexus" với 3 cửa sổ chạy nexus
-          tmux new-session -d -s nexus -n win1 "./nexus-cli/clients/cli/target/release/nexus"
-          tmux new-window -t nexus:1 -n win2 "./nexus-cli/clients/cli/target/release/nexus"
-          tmux new-window -t nexus:2 -n win3 "./nexus-cli/clients/cli/target/release/nexus"
-          tmux ls
+
+          # 1) Tạo session chỉ mở bash, để server không chết nếu lệnh fail
+          tmux new-session -d -s nexus -n win1 "bash -l"
+          tmux new-window  -t nexus:1 -n win2 "bash -l"
+          tmux new-window  -t nexus:2 -n win3 "bash -l"
+
+          # 2) Gửi lệnh vào từng window (giữ cửa sổ luôn mở với 'exec bash')
+          # Bạn có thể thay subcommand bên dưới cho phù hợp (ví dụ: 'network run', 'node start',...)
+          tmux send-keys -t nexus:0 "cd '$NEXUS_DIR' && '$NEXUS_BIN' --help | tee -a ~/nexus1.log ; exec bash" C-m
+          tmux send-keys -t nexus:1 "cd '$NEXUS_DIR' && '$NEXUS_BIN' --help | tee -a ~/nexus2.log ; exec bash" C-m
+          tmux send-keys -t nexus:2 "cd '$NEXUS_DIR' && '$NEXUS_BIN' --help | tee -a ~/nexus3.log ; exec bash" C-m
+
+          tmux ls || true
+          echo "::notice::tmux session 'nexus' ready. Attach with: tmux attach -t nexus"
 
       - name: Start SSH (tmate)
         uses: mxschmitt/action-tmate@v3
